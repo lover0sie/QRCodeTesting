@@ -103,8 +103,9 @@
 
       qrScanned = true;
 
-      // Stop camera after first scan (keep simple)
-      html5QrcodeScanner.clear();
+      html5QrcodeScanner.clear().then(() => {
+      html5QrcodeScanner = null;
+      });
     }
 
     function onScanFailure(error) {
@@ -167,4 +168,5 @@
   </script>
 </body>
 </html>
+
 
