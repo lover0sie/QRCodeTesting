@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>QR Code Data Entry</title>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 400px; margin:auto;}
+    h2 { text-align: center; }
+    button { padding: 10px 20px; font-size: 16px; margin-top:10px; width:100%; }
+    select, input { width: 100%; padding: 8px; margin: 5px 0 15px; font-size:16px; }
+    #qr-result { font-size: 16px; color: blue; margin: 10px 0; word-break: break-word; }
+    .field { background: #f2f2f2; padding: 8px; margin-bottom: 10px; border-radius: 4px;}
+  </style>
+</head>
+<body>
+  <h2>QR Code Scanner & Data Entry</h2>
+
+  <!-- Scan QR -->
+  <button id="start-scan">Scan QR Code</button>
+  <div id="reader" style="width:100%; margin-top:10px;"></div>
+
+  <h3>Scanned QR Content:</h3>
+  <div id="qr-result">None</div>
+
+  <h3>Parsed QR Info</h3>
+  <div class="field"><b>Project Name:</b> <span id="projectName">-</span></div>
+  <div class="field"><b>Description:</b> <span id="description">-</span></div>
+  <div class="field"><b>Material Number:</b> <span id="materialNumber">-</span></div>
+  <div class="field"><b>Serial Number:</b> <span id="serialNumber">-</span></div>
+
+  <h3>Additional Info</h3>
+  <label>Location:</label>
+  <select id="location">
+    <option value="Station 1">Station 1</option>
+    <option value="Station 2">Station 2</option>
+    <option value="Station 3">Station 3</option>
+  </select>
+
+  <label>Status:</label>
+  <select id="status">
+    <option value="Start Process">Start Process</option>
+    <option value="End Process">End Process</option>
+    <option value="Rework">Rework</option>
+  </select>
+
+  <label>Notes:</label>
+  <input type="text" id="notes" placeholder="Enter notes">
+
+  <button id="submit-data">Submit</button>
+
+  <script>
+    let html5QrcodeScanner;
+    let qrScanned = false;
+    let parsedData = null;
+
+    document.getElementById("start-scan").addEventListener("click", function() {
+      if (!html5QrcodeScanner) {
+        html5QrcodeScanner = new Html5QrcodeScanner(
+          "reader", { fps: 10, qrbox: 250 }
+        );
+        html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+      }
+    });
+
+    function onScanSuccess(decodedText) {
+      document.getElementById("qr-result").innerText = decodedText;
+
+      const parts = decodedText.trim().split(";");
+
+      if (parts.length !== 8) {
+        alert("Invalid QR format!");
+        return;
+      }
+
+      const [
+        version,
+        projectName,
+        description,
+        materialNumber,
+        serialNumber,
+        model,
+        type,
+        refrigerant
+      ] = parts;
+
+      // Display parsed fields
+      document.getElementById("projectName").innerText = projectName;
+      document.getElementById("description").innerText = description;
+      document.getElementById("materialNumber").innerText = materialNumber;
+      document.getElementById("serialNumber").innerText = serialNumber;
+
+      parsedData = {
+        version,
+        projectName,
+        description,
+        materialNumber,
+        serialNumber,
+        model,
+        type,
+        refrigerant
+      };
+
+      qrScanned = true;
+
+      // Stop camera after first scan (keep simple)
+      html5QrcodeScanner.clear();
+    }
+
+    function onScanFailure(error) {
+      // optional: log errors
+      // console.warn(`QR scan failed: ${error}`);
+    }
+
+    function clearForm() {
+      document.getElementById("qr-result").innerText = "None";
+      document.getElementById("projectName").innerText = "-";
+      document.getElementById("description").innerText = "-";
+      document.getElementById("materialNumber").innerText = "-";
+      document.getElementById("serialNumber").innerText = "-";
+      document.getElementById("notes").value = "";
+      document.getElementById("location").selectedIndex = 0;
+      document.getElementById("status").selectedIndex = 0;
+      parsedData = null;
+      qrScanned = false;
+    }
+
+    document.getElementById("submit-data").addEventListener("click", async function() {
+      if (!qrScanned) {
+        alert("Please scan a QR code first!");
+        return;
+      }
+
+      // Add timestamp
+      const now = new Date();
+      const timestamp =
+        now.getFullYear() + "-" +
+        String(now.getMonth()+1).padStart(2,"0") + "-" +
+        String(now.getDate()).padStart(2,"0") + " " +
+        String(now.getHours()).padStart(2,"0") + ":" +
+        String(now.getMinutes()).padStart(2,"0") + ":" +
+        String(now.getSeconds()).padStart(2,"0");
+
+      const data = {
+        timestamp: timestamp,
+        ...parsedData,
+        location: document.getElementById("location").value,
+        status: document.getElementById("status").value,
+        notes: document.getElementById("notes").value
+      };
+
+      console.log("Submitting data:", data);
+
+      try {
+        await fetch("https://default457cc84b70d44a9b954be85b83bb40.46.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/e5da0719729b4d16b88561247d83b2cd/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=2AIZiOYbqIqHgTJ5-CQit3FmQX088XeuKSlk9mW01eg", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data)
+        });
+        alert("Data submitted successfully!");
+        clearForm();
+      } catch(err) {
+        alert("Failed to submit data. Check your URL and network.");
+        console.error(err);
+      }
+    });
+  </script>
+</body>
+</html>
