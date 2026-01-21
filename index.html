@@ -2,8 +2,12 @@
 <html>
 <head>
   <title>QR Code Data Entry</title>
+
+  <!-- QR Scanner -->
   <script src="https://unpkg.com/html5-qrcode"></script>
+
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
   <style>
     body { font-family: Arial, sans-serif; padding: 20px; max-width: 400px; margin:auto;}
     h2 { text-align: center; }
@@ -11,12 +15,13 @@
     select, input { width: 100%; padding: 8px; margin: 5px 0 15px; font-size:16px; }
     #qr-result { font-size: 16px; color: blue; margin: 10px 0; word-break: break-word; }
     .field { background: #f2f2f2; padding: 8px; margin-bottom: 10px; border-radius: 4px;}
+    #debug { font-size: 12px; white-space: pre-wrap; background:#fafafa; border:1px solid #eee; padding:10px; border-radius:6px; }
   </style>
 </head>
+
 <body>
   <h2>QR Code Scanner & Data Entry</h2>
 
-  <!-- Scan QR -->
   <button id="start-scan">Scan QR Code</button>
   <div id="reader" style="width:100%; margin-top:10px;"></div>
 
@@ -30,6 +35,7 @@
   <div class="field"><b>Serial Number:</b> <span id="serialNumber">-</span></div>
 
   <h3>Additional Info</h3>
+
   <label>Location:</label>
   <select id="location">
     <option value="Station 1">Station 1</option>
@@ -48,125 +54,210 @@
   <input type="text" id="notes" placeholder="Enter notes">
 
   <button id="submit-data">Submit</button>
+  <button id="clear-data" style="margin-top:6px;">Clear</button>
 
-  <script>
-    let html5QrcodeScanner;
+  <h3>Debug</h3>
+  <div id="debug">Ready.</div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import {
+      getFirestore, collection, addDoc, serverTimestamp,
+      query, where, orderBy, getDocs, limit
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyBePrEYgwU4tD9h82n9PbjfxtTyQMXm6Kk",
+      authDomain: "qrcodetesting-4f86e.firebaseapp.com",
+      projectId: "qrcodetesting-4f86e",
+      storageBucket: "qrcodetesting-4f86e.firebasestorage.app",
+      messagingSenderId: "746921254909",
+      appId: "1:746921254909:web:7acce026b9d96c97880394"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // UI helpers
+    const el = (id) => document.getElementById(id);
+    const debug = (msg) => {
+      console.log(msg);
+      el("debug").textContent = typeof msg === "string" ? msg : JSON.stringify(msg, null, 2);
+    };
+
+    // ✅ Determine current station state for a serialNumber + station
+    async function getStationState(db, serialNumber, station) {
+      const q = query(
+        collection(db, "processLogs"),
+        where("serialNumber", "==", serialNumber),
+        where("location", "==", station),
+        orderBy("createdAt", "desc"),
+        limit(50)
+      );
+
+      const snap = await getDocs(q);
+
+      const events = [];
+      snap.forEach(d => events.push(d.data()));
+      events.reverse(); // oldest -> newest
+
+      let started = false;
+      let completed = false;
+
+      for (const e of events) {
+        const s = (e.status || "").toLowerCase();
+        if (s.includes("start")) started = true;
+        if (s.includes("end") && started) completed = true;
+      }
+
+      if (!started) return "idle";
+      if (started && !completed) return "running";
+      return "completed";
+    }
+
+    let html5QrcodeScanner = null;
     let qrScanned = false;
     let parsedData = null;
 
-    document.getElementById("start-scan").addEventListener("click", function() {
-      if (!html5QrcodeScanner) {
-        html5QrcodeScanner = new Html5QrcodeScanner(
-          "reader", { fps: 10, qrbox: 250 }
-        );
-        html5QrcodeScanner.render(onScanSuccess, onScanFailure);
-      }
-    });
-
-    function onScanSuccess(decodedText) {
-      document.getElementById("qr-result").innerText = decodedText;
-
-      const parts = decodedText.trim().split(";");
-
-      if (parts.length !== 8) {
-        alert("Invalid QR format!");
-        return;
-      }
-
-      const [
-        version,
-        projectName,
-        description,
-        materialNumber,
-        serialNumber,
-        model,
-        type,
-        refrigerant
-      ] = parts;
-
-      // Display parsed fields
-      document.getElementById("projectName").innerText = projectName;
-      document.getElementById("description").innerText = description;
-      document.getElementById("materialNumber").innerText = materialNumber;
-      document.getElementById("serialNumber").innerText = serialNumber;
-
-      parsedData = {
-        version,
-        projectName,
-        description,
-        materialNumber,
-        serialNumber,
-        model,
-        type,
-        refrigerant
-      };
-
-      qrScanned = true;
-
-      html5QrcodeScanner.clear().then(() => {
-      html5QrcodeScanner = null;
-      });
-    }
-
-    function onScanFailure(error) {
-      // optional: log errors
-      // console.warn(`QR scan failed: ${error}`);
-    }
-
     function clearForm() {
-      document.getElementById("qr-result").innerText = "None";
-      document.getElementById("projectName").innerText = "-";
-      document.getElementById("description").innerText = "-";
-      document.getElementById("materialNumber").innerText = "-";
-      document.getElementById("serialNumber").innerText = "-";
-      document.getElementById("notes").value = "";
-      document.getElementById("location").selectedIndex = 0;
-      document.getElementById("status").selectedIndex = 0;
+      el("qr-result").innerText = "None";
+      el("projectName").innerText = "-";
+      el("description").innerText = "-";
+      el("materialNumber").innerText = "-";
+      el("serialNumber").innerText = "-";
+      el("notes").value = "";
+      el("location").selectedIndex = 0;
+      el("status").selectedIndex = 0;
+
       parsedData = null;
       qrScanned = false;
+      debug("Cleared. Ready.");
     }
 
-    document.getElementById("submit-data").addEventListener("click", async function() {
-      if (!qrScanned) {
-        alert("Please scan a QR code first!");
+    function onScanSuccess(decodedText) {
+      el("qr-result").innerText = decodedText;
+
+      const parts = decodedText.trim().split(";");
+      if (parts.length !== 8) {
+        alert("Invalid QR format! Expected 8 parts separated by ';'");
+        debug({ error: "Invalid QR format", decodedText, partsCount: parts.length });
         return;
       }
 
-      // Add timestamp
-      const now = new Date();
-      const timestamp =
-        now.getFullYear() + "-" +
-        String(now.getMonth()+1).padStart(2,"0") + "-" +
-        String(now.getDate()).padStart(2,"0") + " " +
-        String(now.getHours()).padStart(2,"0") + ":" +
-        String(now.getMinutes()).padStart(2,"0") + ":" +
-        String(now.getSeconds()).padStart(2,"0");
+      const [version, projectName, description, materialNumber, serialNumber, model, type, refrigerant] = parts;
 
-      const data = {
-        timestamp: timestamp,
-        ...parsedData,
-        location: document.getElementById("location").value,
-        status: document.getElementById("status").value,
-        notes: document.getElementById("notes").value
-      };
+      el("projectName").innerText = projectName;
+      el("description").innerText = description;
+      el("materialNumber").innerText = materialNumber;
+      el("serialNumber").innerText = serialNumber;
 
-      console.log("Submitting data:", data);
+      parsedData = { version, projectName, description, materialNumber, serialNumber, model, type, refrigerant };
+      qrScanned = true;
 
+      debug({ scanned: true, parsedData });
+
+      if (html5QrcodeScanner) {
+        html5QrcodeScanner.clear()
+          .then(() => {
+            html5QrcodeScanner = null;
+            debug("Scan complete. You can now Submit.");
+          })
+          .catch((e) => debug({ scannerClearError: String(e) }));
+      }
+    }
+
+    function onScanFailure(_error) {}
+
+    el("start-scan").addEventListener("click", () => {
       try {
-        await fetch("https://default457cc84b70d44a9b954be85b83bb40.46.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/e5da0719729b4d16b88561247d83b2cd/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=2AIZiOYbqIqHgTJ5-CQit3FmQX088XeuKSlk9mW01eg", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data)
-        });
-        alert("Data submitted successfully!");
-        clearForm();
-      } catch(err) {
-        alert("Failed to submit data. Check your URL and network.");
-        console.error(err);
+        if (!html5QrcodeScanner) {
+          html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 });
+          html5QrcodeScanner.render(onScanSuccess, onScanFailure);
+          debug("Scanner started. Point camera at QR code...");
+        } else {
+          debug("Scanner already running...");
+        }
+      } catch (e) {
+        debug({ startScanError: String(e) });
+        alert("Failed to start scanner. Check browser camera permission.");
       }
     });
+
+    el("clear-data").addEventListener("click", clearForm);
+
+    // ✅ Submit with validation
+    el("submit-data").addEventListener("click", async () => {
+      if (!qrScanned || !parsedData) {
+        alert("Please scan a QR code first!");
+        debug("Submit blocked: no QR scanned.");
+        return;
+      }
+
+      const station = el("location").value;
+      const status = el("status").value;
+      const serial = parsedData.serialNumber;
+
+      try {
+        // Check existing state from Firestore
+        const state = await getStationState(db, serial, station);
+        debug({ validation: { serial, station, status, state } });
+
+        // Validation rules
+        if (status === "Start Process") {
+          if (state === "running") {
+            alert(`❌ Error: ${serial} at ${station} already STARTED (not ended yet).`);
+            return;
+          }
+          if (state === "completed") {
+            alert(`❌ Error: ${serial} at ${station} already COMPLETED (Start + End). Cannot start again.`);
+            return;
+          }
+        }
+
+        if (status === "End Process") {
+          if (state === "idle") {
+            alert(`❌ Error: ${serial} at ${station} has NOT been started yet. Cannot end before start.`);
+            return;
+          }
+          if (state === "completed") {
+            alert(`❌ Error: ${serial} at ${station} already ENDED. Cannot end twice.`);
+            return;
+          }
+        }
+
+        // Save event log
+        const payload = {
+          ...parsedData,
+          location: station,
+          status: status,
+          notes: el("notes").value,
+          createdAt: serverTimestamp()
+        };
+
+        debug({ submitting: true, payload });
+
+        const docRef = await addDoc(collection(db, "processLogs"), payload);
+        debug({ saved: true, docId: docRef.id });
+
+        alert("Data saved to Firestore!");
+        clearForm();
+      } catch (err) {
+        console.error(err);
+
+        // Most common: needs composite index for where+where+orderBy
+        debug({ saveError: err?.message || String(err), code: err?.code || null });
+
+        if (String(err?.message || "").toLowerCase().includes("index")) {
+          alert("Firestore needs an INDEX for this query. Open DevTools Console and click the index link it provides.");
+        } else if (err?.code === "permission-denied") {
+          alert("Failed: permission denied. Check Firestore Rules.");
+        } else {
+          alert("Failed: " + (err?.message || err));
+        }
+      }
+    });
+
+    debug("Ready. Click 'Scan QR Code' to start.");
   </script>
 </body>
 </html>
-
-
